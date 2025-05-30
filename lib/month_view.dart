@@ -1,7 +1,8 @@
-// lib/month_view.dart
+// lib/month_view.dart (REVISI ULANG)
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart'; // Make sure you have intl: ^0.19.0 in pubspec.yaml
+import 'package:intl/intl.dart';
 import 'package:calendar/day_view.dart'; // Import CalendarEvent model
+import 'dart:math'; // Untuk fungsi min
 
 class MonthViewCalendar extends StatefulWidget {
   final DateTime initialDate;
@@ -13,12 +14,13 @@ class MonthViewCalendar extends StatefulWidget {
 }
 
 class _MonthViewCalendarState extends State<MonthViewCalendar> {
+  late PageController _pageController;
   late DateTime _focusedMonth;
   late DateTime
   _selectedDate; // Keep track of the selected date for highlighting
   Map<String, List<CalendarEvent>> eventsPerDate = {}; // Data event
 
-  // Define display range for events in a day block
+  // Define display range for events in a day block for arrow indicators
   final int _displayStartTimeHour = 8;
   final int _displayEndTimeHour = 17; // 5 PM
 
@@ -30,6 +32,10 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
       widget.initialDate.month,
       1,
     );
+    // Initialize page controller to start at the current month's page index
+    _pageController = PageController(
+      initialPage: _calculateInitialPageIndex(widget.initialDate),
+    );
     _selectedDate = DateTime(
       widget.initialDate.year,
       widget.initialDate.month,
@@ -38,15 +44,31 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
     _initializeEvents(); // Initialize dummy events for demonstration
   }
 
-  // A simplified event initialization for MonthView.
-  // In a real app, this data would come from a shared state/database.
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  int _calculateInitialPageIndex(DateTime date) {
+    // Arbitrary starting year, e.g., 2000, to calculate page index
+    // This allows navigating many years back/forward.
+    final DateTime epoch = DateTime(2000, 1, 1);
+    return ((date.year - epoch.year) * 12) + (date.month - epoch.month);
+  }
+
+  DateTime _getMonthForPageIndex(int index) {
+    final DateTime epoch = DateTime(2000, 1, 1);
+    return DateTime(epoch.year + (index ~/ 12), epoch.month + (index % 12));
+  }
+
   void _initializeEvents() {
     DateTime today = DateTime.now();
     DateTime baseToday = DateTime(today.year, today.month, today.day);
     DateTime tomorrow = baseToday.add(const Duration(days: 1));
     DateTime dayAfterTomorrow = baseToday.add(const Duration(days: 2));
+    DateTime twoDaysAfterTomorrow = baseToday.add(const Duration(days: 4));
     DateTime nextWeek = baseToday.add(const Duration(days: 7));
-    DateTime startOfMonth = DateTime(today.year, today.month, 1);
     DateTime midMonth = DateTime(today.year, today.month, 15);
 
     // Clear existing events for fresh start in Month View
@@ -148,6 +170,31 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
       ),
     ];
 
+    // Events with intentional overlap for splitting test
+    eventsPerDate[_getDateKey(twoDaysAfterTomorrow)] = [
+      CalendarEvent(
+        id: 'overlap1',
+        title: 'Meeting A',
+        startTime: twoDaysAfterTomorrow.copyWith(hour: 10, minute: 0),
+        endTime: twoDaysAfterTomorrow.copyWith(hour: 11, minute: 30),
+        color: Colors.deepOrange,
+      ),
+      CalendarEvent(
+        id: 'overlap2',
+        title: 'Meeting B',
+        startTime: twoDaysAfterTomorrow.copyWith(hour: 10, minute: 45),
+        endTime: twoDaysAfterTomorrow.copyWith(hour: 12, minute: 0),
+        color: Colors.cyan,
+      ),
+      CalendarEvent(
+        id: 'overlap3',
+        title: 'Meeting C',
+        startTime: twoDaysAfterTomorrow.copyWith(hour: 11, minute: 0),
+        endTime: twoDaysAfterTomorrow.copyWith(hour: 12, minute: 30),
+        color: Colors.pink,
+      ),
+    ];
+
     // Some events in the middle of the month
     eventsPerDate[_getDateKey(midMonth)] = [
       CalendarEvent(
@@ -168,74 +215,38 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
     return eventsPerDate[_getDateKey(date)] ?? [];
   }
 
-  void _changeMonth(int monthOffset) {
-    setState(() {
-      _focusedMonth = DateTime(
-        _focusedMonth.year,
-        _focusedMonth.month + monthOffset,
-        1,
-      );
-      // Adjust selected date to the new month, keeping the day if possible
-      int newDay = _selectedDate.day;
-      if (newDay >
-          DateTime(_focusedMonth.year, _focusedMonth.month + 1, 0).day) {
-        newDay =
-            DateTime(
-              _focusedMonth.year,
-              _focusedMonth.month + 1,
-              0,
-            ).day; // Cap to last day of month
-      }
-      _selectedDate = DateTime(_focusedMonth.year, _focusedMonth.month, newDay);
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                DateFormat('MMMM y').format(_focusedMonth),
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            IconButton(
-              onPressed: () => _changeMonth(-1),
-              icon: const Icon(Icons.chevron_left),
-              tooltip: 'Bulan Sebelumnya',
-            ),
-            IconButton(
-              onPressed: () {
-                setState(() {
-                  _focusedMonth = DateTime(
-                    DateTime.now().year,
-                    DateTime.now().month,
-                    1,
-                  );
-                  _selectedDate = DateTime.now();
-                });
-              },
-              icon: const Icon(Icons.calendar_today),
-              tooltip: 'Bulan Ini',
-            ),
-            IconButton(
-              onPressed: () => _changeMonth(1),
-              icon: const Icon(Icons.chevron_right),
-              tooltip: 'Bulan Selanjutnya',
-            ),
-          ],
+        title: Text(
+          DateFormat('MMMM y').format(_focusedMonth),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
+        centerTitle: true,
       ),
       body: Column(
-        children: [_buildWeekdayHeader(), Expanded(child: _buildMonthGrid())],
+        children: [
+          _buildWeekdayHeader(),
+          Expanded(
+            child: PageView.builder(
+              controller: _pageController,
+              scrollDirection:
+                  Axis.vertical, // Scroll vertikal untuk ganti bulan
+              onPageChanged: (index) {
+                setState(() {
+                  _focusedMonth = _getMonthForPageIndex(index);
+                });
+              },
+              itemBuilder: (context, index) {
+                final month = _getMonthForPageIndex(index);
+                return _buildMonthGrid(month);
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -279,14 +290,9 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
     );
   }
 
-  Widget _buildMonthGrid() {
-    final int daysInMonth =
-        DateTime(_focusedMonth.year, _focusedMonth.month + 1, 0).day;
-    final DateTime firstDayOfMonth = DateTime(
-      _focusedMonth.year,
-      _focusedMonth.month,
-      1,
-    );
+  Widget _buildMonthGrid(DateTime month) {
+    final int daysInMonth = DateTime(month.year, month.month + 1, 0).day;
+    final DateTime firstDayOfMonth = DateTime(month.year, month.month, 1);
     final int firstWeekday =
         firstDayOfMonth.weekday % 7; // Sunday = 0, Monday = 1, etc.
 
@@ -299,18 +305,28 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
 
     // Add cells for each day of the month
     for (int day = 1; day <= daysInMonth; day++) {
-      final DateTime currentDay = DateTime(
-        _focusedMonth.year,
-        _focusedMonth.month,
-        day,
-      );
+      final DateTime currentDay = DateTime(month.year, month.month, day);
       dayCells.add(_buildDayCell(currentDay));
+    }
+
+    // Calculate total number of cells needed for 6 rows (assuming 7 columns)
+    int totalCellsNeeded = 6 * 7;
+    // Add trailing empty cells to fill the grid if needed
+    while (dayCells.length < totalCellsNeeded) {
+      dayCells.add(const SizedBox.shrink());
     }
 
     return GridView.builder(
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 7,
-        childAspectRatio: 0.8, // Adjust as needed
+        // Adjust childAspectRatio to make cells larger.
+        // Screen height / (6 rows * cell height) / (screen width / 7 columns * cell width)
+        // A value of 1.0 would mean square cells. Lower value means taller cells.
+        // We want cells to fill the expanded height, so it's a bit tricky.
+        // A common practice is to calculate based on screen size, or use a fixed ratio.
+        // Let's try to make it fill.
+        childAspectRatio:
+            0.5, // Disesuaikan agar sel lebih besar dan 6 baris penuh
       ),
       itemCount: dayCells.length,
       itemBuilder: (context, index) => dayCells[index],
@@ -345,32 +361,43 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
       }
     }
 
+    // Sort scheduled events by start time for consistent display
+    scheduledEvents.sort((a, b) => a.startTime.compareTo(b.startTime));
+
     bool hasEventsBeforeDisplayTime = false;
     bool hasEventsAfterDisplayTime = false;
 
     // Check for events outside display range
     for (var event in scheduledEvents) {
-      if (event.startTime.hour < _displayStartTimeHour) {
+      if (event.startTime.isBefore(
+        date.copyWith(hour: _displayStartTimeHour, minute: 0),
+      )) {
         hasEventsBeforeDisplayTime = true;
       }
-      if (event.endTime.hour >= _displayEndTimeHour) {
-        // Check if event ends at or after _displayEndTimeHour
+      if (event.endTime.isAfter(
+        date.copyWith(hour: _displayEndTimeHour, minute: 0),
+      )) {
         hasEventsAfterDisplayTime = true;
       }
     }
+
+    // Logic for splitting overlapping events (simplified for MonthView)
+    List<List<CalendarEvent>> eventColumns = _calculateMonthViewEventLayout(
+      scheduledEvents,
+    );
 
     return GestureDetector(
       onTap: () {
         setState(() {
           _selectedDate = date;
-          // Optionally, navigate to DayView for this date
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => DayViewCalendar(initialDate: date),
-            ),
-          );
         });
+        // Navigate to DayView for this date
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => DayViewCalendar(initialDate: date),
+          ),
+        );
       },
       child: Container(
         decoration: BoxDecoration(
@@ -379,26 +406,30 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
           borderRadius: isToday ? BorderRadius.circular(8) : null,
         ),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Date number
-            Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
-              decoration: BoxDecoration(
-                color: isToday ? Colors.blue : Colors.transparent,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                '${date.day}',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
-                  color:
-                      isToday
-                          ? Colors.white
-                          : isCurrentMonth
-                          ? Colors.black87
-                          : Colors.grey.shade400,
+            Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                margin: const EdgeInsets.all(4),
+                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 6),
+                decoration: BoxDecoration(
+                  color: isToday ? Colors.blue : Colors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '${date.day}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
+                    color:
+                        isToday
+                            ? Colors.white
+                            : isCurrentMonth
+                            ? Colors.black87
+                            : Colors.grey.shade400,
+                  ),
                 ),
               ),
             ),
@@ -407,63 +438,73 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
               Container(
                 height: 4,
                 width: double.infinity,
-                margin: const EdgeInsets.only(top: 2, left: 2, right: 2),
+                margin: const EdgeInsets.only(left: 4, right: 4, bottom: 2),
                 decoration: BoxDecoration(
-                  color:
-                      fullDayEvents
-                          .first
-                          .color, // Use first full-day event color
+                  color: fullDayEvents.first.color,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
             // Events indicator (blocks)
             Expanded(
-              child: SingleChildScrollView(
-                physics:
-                    const NeverScrollableScrollPhysics(), // Prevent scrolling inside cell
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (hasEventsBeforeDisplayTime) // Panah turun untuk jadwal sebelum jam 8 pagi
+                    if (hasEventsBeforeDisplayTime)
                       const Icon(
                         Icons.arrow_drop_up,
                         size: 16,
                         color: Colors.grey,
                       ),
-                    ...scheduledEvents.take(2).map((event) {
-                      // Display up to 2 events as blocks
-                      // Calculate block height based on duration (scaled)
-                      double durationInMinutes =
-                          event.endTime
-                              .difference(event.startTime)
-                              .inMinutes
-                              .toDouble();
-                      double blockHeight =
-                          (durationInMinutes / 60) *
-                          8; // Scale factor, adjust as needed
-
-                      // Clamp block height to a reasonable range
-                      blockHeight = blockHeight.clamp(4.0, 20.0);
-
-                      return Container(
-                        height: blockHeight,
-                        width: double.infinity,
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 2,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: event.color,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      );
-                    }).toList(),
-                    if (scheduledEvents.length > 2) // Indicate more events
+                    // Display events based on calculated columns
+                    Flexible(
+                      // Use Flexible to limit height of event blocks
+                      child: Row(
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start, // Align to top
+                        children:
+                            eventColumns.take(3).map((columnEvents) {
+                              // Limit to 3 columns for space
+                              return Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children:
+                                      columnEvents.take(2).map((event) {
+                                        // Limit to 2 events per column
+                                        // Calculate block height (fixed for simplicity in month view)
+                                        // We are not trying to represent exact duration scale here,
+                                        // but rather presence and visual splitting.
+                                        double blockHeight =
+                                            12.0; // Fixed height for each event block
+                                        return Container(
+                                          height: blockHeight,
+                                          margin: const EdgeInsets.symmetric(
+                                            vertical: 1,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: event.color,
+                                            borderRadius: BorderRadius.circular(
+                                              2,
+                                            ),
+                                          ),
+                                        );
+                                      }).toList(),
+                                ),
+                              );
+                            }).toList(),
+                      ),
+                    ),
+                    if (scheduledEvents.length >
+                        (eventColumns.length * 2).clamp(
+                          0,
+                          scheduledEvents.length,
+                        )) // Indicate more events if not all shown
                       Text(
-                        '+${scheduledEvents.length - 2} more',
+                        '+${scheduledEvents.length - (eventColumns.length * 2)} more',
                         style: TextStyle(fontSize: 8, color: Colors.grey[600]),
                       ),
-                    if (hasEventsAfterDisplayTime) // Panah atas untuk jadwal setelah jam 5 sore
+                    if (hasEventsAfterDisplayTime)
                       const Icon(
                         Icons.arrow_drop_down,
                         size: 16,
@@ -477,5 +518,42 @@ class _MonthViewCalendarState extends State<MonthViewCalendar> {
         ),
       ),
     );
+  }
+
+  // Simplified event layout calculation for MonthView
+  // Aims to put overlapping events side-by-side if space allows
+  List<List<CalendarEvent>> _calculateMonthViewEventLayout(
+    List<CalendarEvent> events,
+  ) {
+    if (events.isEmpty) return [];
+
+    List<List<CalendarEvent>> columns = [];
+
+    for (CalendarEvent event in events) {
+      bool placed = false;
+      for (int i = 0; i < columns.length; i++) {
+        bool canPlaceInThisColumn = true;
+        for (CalendarEvent existingEventInColumn in columns[i]) {
+          if (_eventsOverlap(event, existingEventInColumn)) {
+            canPlaceInThisColumn = false;
+            break;
+          }
+        }
+        if (canPlaceInThisColumn) {
+          columns[i].add(event);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        columns.add([event]);
+      }
+    }
+    return columns;
+  }
+
+  bool _eventsOverlap(CalendarEvent event1, CalendarEvent event2) {
+    return event1.startTime.isBefore(event2.endTime) &&
+        event2.startTime.isBefore(event1.endTime);
   }
 }
