@@ -142,6 +142,169 @@ class _AddEventPageState extends State<AddEventPage> {
     {'name': 'Grape', 'color': Colors.deepPurple},
   ];
 
+  final List<Map<String, dynamic>> timezoneOptions = [
+    // Asia
+    {
+      'name': 'Western Indonesian Time (WIB)',
+      'offset': 'GMT+7',
+      'location': 'Jakarta, Sumatra, Java',
+    },
+    {
+      'name': 'Central Indonesian Time (WITA)',
+      'offset': 'GMT+8',
+      'location': 'Bali, Lombok, Sulawesi',
+    },
+    {
+      'name': 'Eastern Indonesian Time (WIT)',
+      'offset': 'GMT+9',
+      'location': 'Papua, Maluku',
+    },
+    {'name': 'Singapore Time', 'offset': 'GMT+8', 'location': 'Singapore'},
+    {
+      'name': 'Malaysia Time',
+      'offset': 'GMT+8',
+      'location': 'Malaysia, Brunei',
+    },
+    {'name': 'Philippines Time', 'offset': 'GMT+8', 'location': 'Philippines'},
+    {
+      'name': 'Indochina Time',
+      'offset': 'GMT+7',
+      'location': 'Thailand, Vietnam, Cambodia',
+    },
+    {
+      'name': 'China Standard Time',
+      'offset': 'GMT+8',
+      'location': 'China, Taiwan, Hong Kong',
+    },
+    {'name': 'Japan Standard Time', 'offset': 'GMT+9', 'location': 'Japan'},
+    {
+      'name': 'Korea Standard Time',
+      'offset': 'GMT+9',
+      'location': 'South Korea',
+    },
+    {
+      'name': 'India Standard Time',
+      'offset': 'GMT+5:30',
+      'location': 'India, Sri Lanka',
+    },
+    {
+      'name': 'Arabian Standard Time',
+      'offset': 'GMT+4',
+      'location': 'UAE, Oman',
+    },
+
+    // Europe
+    {
+      'name': 'Greenwich Mean Time',
+      'offset': 'GMT+0',
+      'location': 'London, Dublin',
+    },
+    {
+      'name': 'Central European Time',
+      'offset': 'GMT+1',
+      'location': 'Paris, Berlin, Rome',
+    },
+    {
+      'name': 'Eastern European Time',
+      'offset': 'GMT+2',
+      'location': 'Helsinki, Athens, Cairo',
+    },
+    {
+      'name': 'Moscow Standard Time',
+      'offset': 'GMT+3',
+      'location': 'Moscow, Istanbul',
+    },
+
+    // Americas
+    {
+      'name': 'Eastern Standard Time',
+      'offset': 'GMT-5',
+      'location': 'New York, Miami, Toronto',
+    },
+    {
+      'name': 'Central Standard Time',
+      'offset': 'GMT-6',
+      'location': 'Chicago, Dallas, Mexico City',
+    },
+    {
+      'name': 'Mountain Standard Time',
+      'offset': 'GMT-7',
+      'location': 'Denver, Phoenix',
+    },
+    {
+      'name': 'Pacific Standard Time',
+      'offset': 'GMT-8',
+      'location': 'Los Angeles, Vancouver',
+    },
+    {
+      'name': 'Atlantic Standard Time',
+      'offset': 'GMT-4',
+      'location': 'Halifax, Caracas',
+    },
+    {
+      'name': 'Brazil Standard Time',
+      'offset': 'GMT-3',
+      'location': 'São Paulo, Rio de Janeiro',
+    },
+    {
+      'name': 'Argentina Standard Time',
+      'offset': 'GMT-3',
+      'location': 'Buenos Aires',
+    },
+
+    // Oceania
+    {
+      'name': 'Australian Eastern Time',
+      'offset': 'GMT+10',
+      'location': 'Sydney, Melbourne, Brisbane',
+    },
+    {
+      'name': 'Australian Central Time',
+      'offset': 'GMT+9:30',
+      'location': 'Adelaide, Darwin',
+    },
+    {'name': 'Australian Western Time', 'offset': 'GMT+8', 'location': 'Perth'},
+    {
+      'name': 'New Zealand Standard Time',
+      'offset': 'GMT+12',
+      'location': 'Auckland, Wellington',
+    },
+
+    // Africa
+    {
+      'name': 'South Africa Standard Time',
+      'offset': 'GMT+2',
+      'location': 'Cape Town, Johannesburg',
+    },
+    {
+      'name': 'West Africa Time',
+      'offset': 'GMT+1',
+      'location': 'Lagos, Casablanca',
+    },
+    {
+      'name': 'East Africa Time',
+      'offset': 'GMT+3',
+      'location': 'Nairobi, Addis Ababa',
+    },
+
+    // Pacific
+    {
+      'name': 'Hawaii Standard Time',
+      'offset': 'GMT-10',
+      'location': 'Honolulu',
+    },
+    {
+      'name': 'Alaska Standard Time',
+      'offset': 'GMT-9',
+      'location': 'Anchorage',
+    },
+    {
+      'name': 'Fiji Standard Time',
+      'offset': 'GMT+12',
+      'location': 'Suva, Fiji',
+    },
+  ];
+
   @override
   void dispose() {
     _titleController.dispose();
@@ -434,11 +597,7 @@ class _AddEventPageState extends State<AddEventPage> {
         _buildOptionRow(
           icon: Icons.public,
           title: selectedTimezone,
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Timezone selector coming soon!')),
-            );
-          },
+          onTap: _selectTimezone,
         ),
 
         SizedBox(height: 20),
@@ -713,8 +872,16 @@ class _AddEventPageState extends State<AddEventPage> {
       setState(() {
         if (isStart) {
           startDate = pickedDate;
+          // If start date is after end date, update end date to match start date
+          if (startDate.isAfter(endDate)) {
+            endDate = startDate;
+          }
         } else {
           endDate = pickedDate;
+          // If end date is before start date, update start date to match end date
+          if (endDate.isBefore(startDate)) {
+            startDate = endDate;
+          }
         }
       });
     }
@@ -746,6 +913,199 @@ class _AddEventPageState extends State<AddEventPage> {
         }
       });
     }
+  }
+
+  void _selectTimezone() {
+    final TextEditingController searchController = TextEditingController();
+    List<Map<String, dynamic>> filteredTimezones = List.from(timezoneOptions);
+
+    showDialog(
+      context: context,
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => Dialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Container(
+                    height: MediaQuery.of(context).size.height * 0.7,
+                    padding: EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        // Header
+                        Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(Icons.arrow_back),
+                              onPressed: () => Navigator.pop(context),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'Enter a region or time zone',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: 16),
+
+                        // Search Field
+                        TextField(
+                          controller: searchController,
+                          decoration: InputDecoration(
+                            hintText: 'Search time zones...',
+                            prefixIcon: Icon(Icons.search),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                          ),
+                          onChanged: (value) {
+                            setDialogState(() {
+                              filteredTimezones =
+                                  timezoneOptions.where((timezone) {
+                                    return timezone['name']
+                                            .toLowerCase()
+                                            .contains(value.toLowerCase()) ||
+                                        timezone['location']
+                                            .toLowerCase()
+                                            .contains(value.toLowerCase()) ||
+                                        timezone['offset']
+                                            .toLowerCase()
+                                            .contains(value.toLowerCase());
+                                  }).toList();
+                            });
+                          },
+                        ),
+                        SizedBox(height: 16),
+
+                        // Current timezone info
+                        Container(
+                          padding: EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.location_on, color: Colors.blue[600]),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Current: ${DateTime.now().timeZoneName}',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.blue[800],
+                                      ),
+                                    ),
+                                    Text(
+                                      'Local time: ${DateFormat('HH:mm').format(DateTime.now())}',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.blue[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(height: 16),
+
+                        // Timezone List
+                        Expanded(
+                          child: ListView.builder(
+                            itemCount: filteredTimezones.length,
+                            itemBuilder: (context, index) {
+                              final timezone = filteredTimezones[index];
+                              final isSelected =
+                                  selectedTimezone == timezone['name'];
+
+                              final now = DateTime.now();
+                              final timeStr = DateFormat('HH:mm').format(now);
+
+                              return InkWell(
+                                onTap: () {
+                                  setState(() {
+                                    selectedTimezone = timezone['name'];
+                                  });
+                                  Navigator.pop(context);
+                                },
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: 12,
+                                    horizontal: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isSelected ? Colors.blue[50] : null,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.public,
+                                        color: Colors.grey[600],
+                                      ),
+                                      SizedBox(width: 16),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              timezone['name'],
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                fontWeight:
+                                                    isSelected
+                                                        ? FontWeight.w500
+                                                        : FontWeight.normal,
+                                              ),
+                                            ),
+                                            Text(
+                                              '$timeStr ${timezone['offset']}',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.grey[600],
+                                              ),
+                                            ),
+                                            Text(
+                                              timezone['location'],
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey[500],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (isSelected)
+                                        Icon(Icons.check, color: Colors.blue),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          ),
+    );
   }
 
   void _showNotificationPicker() {
