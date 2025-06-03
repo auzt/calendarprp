@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:async';
 
 // Model untuk Event
 class CalendarEvent {
@@ -68,26 +67,21 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   final double timeColumnWidth = 80.0;
   final int minuteInterval = 5;
   late ScrollController _scrollController;
-  final GlobalKey _scrollKey = GlobalKey();
 
-  // Untuk drag indicator
+  // Untuk drag indicator dan cross-date detection
   bool _isDragging = false;
   DateTime? _dragTargetTime;
   CalendarEvent? _draggedEvent;
-  DateTime? _originalSelectedDateOnDragStart;
-  DateTime? _lastUpdateTime;
-
-  // Untuk auto-scroll
-  Timer? _autoScrollTimer;
-  double _autoScrollVelocity = 0.0;
-  static const double _kAutoScrollPixelsPerTick = 8.0;
-  static const Duration _kAutoScrollTimerDuration = Duration(milliseconds: 16);
+  String _dragDirection = ''; // 'left', 'right', atau ''
+  DateTime? _originalSelectedDate; // Untuk undo
+  int _dragOffset = 0; // Berapa hari offset dari tanggal asli
+  DateTime? _lastUpdateTime; // Untuk throttling smooth update
 
   // Untuk undo functionality
   CalendarEvent? _lastMovedEvent;
-  DateTime? _originalEventDateForUndo;
-  DateTime? _originalStartTimeForUndo;
-  DateTime? _originalEndTimeForUndo;
+  DateTime? _originalEventDate;
+  DateTime? _originalStartTime;
+  DateTime? _originalEndTime;
 
   @override
   void initState() {
@@ -102,11 +96,13 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   }
 
   void _initializeEvents() {
+    // Buat events untuk beberapa tanggal sebagai demo
     DateTime today = DateTime.now();
     DateTime baseToday = DateTime(today.year, today.month, today.day);
     DateTime yesterday = baseToday.subtract(const Duration(days: 1));
     DateTime tomorrow = baseToday.add(const Duration(days: 1));
 
+    // Events untuk hari ini
     eventsPerDate[_getDateKey(baseToday)] = [
       CalendarEvent(
         id: '1',
@@ -131,6 +127,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       ),
     ];
 
+    // Events untuk kemarin
     eventsPerDate[_getDateKey(yesterday)] = [
       CalendarEvent(
         id: 'y1',
@@ -148,6 +145,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       ),
     ];
 
+    // Events untuk besok
     eventsPerDate[_getDateKey(tomorrow)] = [
       CalendarEvent(
         id: 't1',
@@ -170,12 +168,12 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   @override
   void dispose() {
     _scrollController.dispose();
-    _autoScrollTimer?.cancel();
     super.dispose();
   }
 
   void _scrollToCurrentTime() {
     DateTime now = DateTime.now();
+    // Hanya scroll ke waktu saat ini jika selectedDate adalah hari ini
     DateTime today = DateTime(now.year, now.month, now.day);
     DateTime currentSelectedDate = DateTime(
       selectedDate.year,
@@ -186,16 +184,17 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     if (currentSelectedDate.isAtSameMomentAs(today)) {
       double targetPosition = (now.hour * hourHeight) - 100;
       if (targetPosition < 0) targetPosition = 0;
-      if (!_scrollController.hasClients) return;
+
       _scrollController.animateTo(
         targetPosition,
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
       );
     } else {
+      // Untuk tanggal lain, scroll ke jam 8 pagi
       double targetPosition = (8 * hourHeight) - 100;
       if (targetPosition < 0) targetPosition = 0;
-      if (!_scrollController.hasClients) return;
+
       _scrollController.animateTo(
         targetPosition,
         duration: const Duration(milliseconds: 500),
@@ -208,11 +207,14 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     setState(() {
       selectedDate = selectedDate.add(Duration(days: dayOffset));
     });
+
+    // Auto scroll setelah ganti tanggal
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToCurrentTime();
     });
+
+    // Tampilkan snackbar untuk feedback
     String dateString = _formatDate(selectedDate);
-    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Pindah ke tanggal: $dateString'),
@@ -221,43 +223,6 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
         behavior: SnackBarBehavior.floating,
       ),
     );
-  }
-
-  void _manageAutoScrollTimer() {
-    if (_autoScrollVelocity != 0.0 && _isDragging) {
-      if (_autoScrollTimer == null || !_autoScrollTimer!.isActive) {
-        _autoScrollTimer = Timer.periodic(_kAutoScrollTimerDuration, (timer) {
-          if (!_isDragging || _autoScrollVelocity == 0.0) {
-            timer.cancel();
-            _autoScrollTimer = null;
-            return;
-          }
-
-          if (_scrollController.hasClients) {
-            double currentOffset = _scrollController.offset;
-            double newOffset = (currentOffset + _autoScrollVelocity).clamp(
-              _scrollController.position.minScrollExtent,
-              _scrollController.position.maxScrollExtent,
-            );
-
-            if (currentOffset != newOffset) {
-              _scrollController.jumpTo(newOffset);
-            } else {
-              // Mencapai batas scroll, hentikan timer untuk arah ini
-              timer.cancel();
-              _autoScrollTimer = null;
-            }
-          } else {
-            // No clients, cancel timer
-            timer.cancel();
-            _autoScrollTimer = null;
-          }
-        });
-      }
-    } else {
-      _autoScrollTimer?.cancel();
-      _autoScrollTimer = null;
-    }
   }
 
   @override
@@ -272,6 +237,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
                 style: const TextStyle(fontSize: 16),
               ),
             ),
+            // Tombol navigasi tanggal
             IconButton(
               onPressed: () => _changeDate(-1),
               icon: const Icon(Icons.chevron_left),
@@ -307,10 +273,13 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       body: SafeArea(
         child: GestureDetector(
           onHorizontalDragEnd: (DragEndDetails details) {
+            // Deteksi swipe gesture
             if (details.primaryVelocity != null) {
               if (details.primaryVelocity! > 0) {
+                // Swipe ke kanan = hari sebelumnya
                 _changeDate(-1);
               } else if (details.primaryVelocity! < 0) {
+                // Swipe ke kiri = hari selanjutnya
                 _changeDate(1);
               }
             }
@@ -318,7 +287,6 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
           child: Stack(
             children: [
               SingleChildScrollView(
-                key: _scrollKey,
                 controller: _scrollController,
                 child: SizedBox(
                   height: 24 * hourHeight,
@@ -332,6 +300,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
               ),
               if (_isDragging && _dragTargetTime != null)
                 _buildDragTimeIndicator(),
+              // Indikator swipe
               _buildSwipeIndicator(),
             ],
           ),
@@ -364,7 +333,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
               SizedBox(width: 4),
               Flexible(
                 child: Text(
-                  'Swipe ganti tanggal • Tap +event • Drag ke tepi scroll',
+                  'Swipe ganti tanggal • Tap +event • Drag jauh = +hari',
                   style: TextStyle(color: Colors.white, fontSize: 9),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -416,6 +385,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
         children: [
           _buildGridLines(),
           _buildCurrentTimeIndicator(),
+          // Area untuk tap (di belakang events)
           _buildTapArea(),
           ..._buildLayoutedEvents(),
           _buildOverlayDragTarget(),
@@ -428,6 +398,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     return Positioned.fill(
       child: GestureDetector(
         onTapDown: (TapDownDetails details) {
+          // Cek apakah tap di area kosong (tidak ada event)
           if (!_isPositionOccupied(details.localPosition.dy)) {
             _createEventAtPosition(details.localPosition.dy);
           }
@@ -449,6 +420,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       if (tapTime.isAfter(event.startTime) && tapTime.isBefore(event.endTime)) {
         return true;
       }
+      // Juga cek jika tap tepat di start time
       if (tapTime.isAtSameMomentAs(event.startTime)) {
         return true;
       }
@@ -464,11 +436,16 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       selectedDate.month,
       selectedDate.day,
     );
+
     bool isToday = currentSelectedDate.isAtSameMomentAs(today);
+
     List<Widget> gridLines = [];
+
+    // Hanya tampilkan garis setiap jam (bukan setiap 5 menit)
     for (int hour = 0; hour < 24; hour++) {
       bool isCurrentHour = isToday && hour == now.hour;
       double top = hour * hourHeight;
+
       gridLines.add(
         Positioned(
           top: top,
@@ -483,6 +460,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
         ),
       );
     }
+
     return Stack(children: gridLines);
   }
 
@@ -493,6 +471,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
           return DragTarget<CalendarEvent>(
             onMove: (details) {
               try {
+                // Throttling untuk smooth update (max 60fps)
                 DateTime now = DateTime.now();
                 if (_lastUpdateTime != null &&
                     now.difference(_lastUpdateTime!).inMilliseconds < 16) {
@@ -500,91 +479,149 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
                 }
                 _lastUpdateTime = now;
 
+                // Gunakan koordinat global untuk akurasi lebih baik
                 Offset globalPosition = details.offset;
 
-                // --- Auto Scroll Zone Detection ---
-                RenderBox? scrollAreaRenderBox =
-                    _scrollKey.currentContext?.findRenderObject() as RenderBox?;
-                if (scrollAreaRenderBox != null &&
-                    _scrollController.hasClients) {
-                  Offset scrollAreaGlobalOffset = scrollAreaRenderBox
-                      .localToGlobal(Offset.zero);
-                  double viewportTopY = scrollAreaGlobalOffset.dy;
-                  double viewportHeight = scrollAreaRenderBox.size.height;
-                  double viewportBottomY = viewportTopY + viewportHeight;
-                  const double scrollZoneHeight = 60.0;
+                // Dapatkan screen bounds
+                double screenWidth = MediaQuery.of(context).size.width;
+                double timeColumnEnd = timeColumnWidth;
+                double eventColumnStart = timeColumnEnd;
+                double eventColumnEnd = screenWidth;
 
-                  if (globalPosition.dy < viewportTopY + scrollZoneHeight) {
-                    _autoScrollVelocity = -_kAutoScrollPixelsPerTick;
-                  } else if (globalPosition.dy >
-                      viewportBottomY - scrollZoneHeight) {
-                    _autoScrollVelocity = _kAutoScrollPixelsPerTick;
-                  } else {
-                    _autoScrollVelocity = 0.0;
-                  }
-                  _manageAutoScrollTimer();
-                } else {
-                  _autoScrollVelocity = 0.0;
-                  _manageAutoScrollTimer();
+                // Konversi ke koordinat relatif terhadap screen
+                double globalX = globalPosition.dx;
+
+                // Inisialisasi jika belum ada originalSelectedDate
+                if (_originalSelectedDate == null) {
+                  _originalSelectedDate = selectedDate;
+                  _dragOffset = 0;
                 }
-                // --- End Auto Scroll Zone Detection ---
 
-                RenderBox? dragTargetRenderBox =
-                    context.findRenderObject() as RenderBox?;
-                if (dragTargetRenderBox != null) {
-                  Offset localOffset = dragTargetRenderBox.globalToLocal(
-                    globalPosition,
-                  );
-                  double localY = localOffset.dy;
-                  double hours = localY / hourHeight;
-                  int targetHour = hours.floor();
-                  int targetMinute = ((hours - targetHour) * 60).round();
-                  targetMinute =
-                      (targetMinute ~/ minuteInterval) * minuteInterval;
-                  if (targetMinute >= 60) {
-                    targetHour += 1;
-                    targetMinute = 0;
-                  }
-                  DateTime? newDragTargetTime;
-                  if (targetHour >= 0 &&
-                      targetHour < 24 &&
-                      targetMinute >= 0 &&
-                      targetMinute < 60) {
-                    DateTime baseDate = DateTime(
-                      selectedDate.year,
-                      selectedDate.month,
-                      selectedDate.day,
+                String newDragDirection = '';
+                int newDragOffset = 0;
+
+                // Debug print untuk troubleshooting
+                // print('GlobalX: $globalX, TimeColumnEnd: $timeColumnEnd, EventColumnEnd: $eventColumnEnd');
+
+                // Deteksi zona drag dengan koordinat global
+                if (globalX < timeColumnEnd - 10) {
+                  // Zona kiri - drag ke area time column atau lebih kiri
+                  newDragDirection = 'left';
+                  double dragDistance =
+                      timeColumnEnd - globalX; // Jarak masuk ke zona kiri
+                  newDragOffset =
+                      -((dragDistance / 30).ceil().clamp(
+                        1,
+                        30,
+                      )); // Min 1 hari, max 30 hari
+                } else if (globalX > eventColumnEnd + 10) {
+                  // Zona kanan - drag melewati edge kanan screen
+                  newDragDirection = 'right';
+                  double dragDistance =
+                      globalX - eventColumnEnd; // Jarak melewati edge kanan
+                  newDragOffset = ((dragDistance / 30).ceil().clamp(
+                    1,
+                    30,
+                  )); // Min 1 hari, max 30 hari
+                } else {
+                  // Zona tengah - dalam area event column
+                  newDragDirection = '';
+                  newDragOffset = 0;
+                }
+
+                // Update jika ada perubahan signifikan
+                if (newDragDirection != _dragDirection ||
+                    (newDragOffset != _dragOffset &&
+                        (newDragOffset - _dragOffset).abs() >= 1)) {
+                  setState(() {
+                    _dragDirection = newDragDirection;
+                    _dragOffset = newDragOffset;
+
+                    if (_originalSelectedDate != null) {
+                      // Update selectedDate berdasarkan offset
+                      selectedDate = _originalSelectedDate!.add(
+                        Duration(days: _dragOffset),
+                      );
+                      _dragTargetTime = null;
+                    }
+                  });
+                }
+
+                // Kalkulasi target time untuk zona tengah
+                if (_dragDirection == '') {
+                  // Konversi global position ke local position untuk event column
+                  RenderBox? renderBox =
+                      context.findRenderObject() as RenderBox?;
+                  if (renderBox != null) {
+                    Offset localOffset = renderBox.globalToLocal(
+                      globalPosition,
                     );
-                    newDragTargetTime = baseDate.copyWith(
-                      hour: targetHour,
-                      minute: targetMinute,
-                    );
+                    double localY = localOffset.dy;
+
+                    double hours = localY / hourHeight;
+                    int targetHour = hours.floor();
+                    int targetMinute = ((hours - targetHour) * 60).round();
+
+                    targetMinute =
+                        (targetMinute ~/ minuteInterval) * minuteInterval;
+
+                    if (targetMinute >= 60) {
+                      targetHour += 1;
+                      targetMinute = 0;
+                    }
+
+                    if (targetHour >= 0 &&
+                        targetHour < 24 &&
+                        targetMinute >= 0 &&
+                        targetMinute < 60) {
+                      DateTime baseDate = DateTime(
+                        selectedDate.year,
+                        selectedDate.month,
+                        selectedDate.day,
+                      );
+                      setState(() {
+                        _dragTargetTime = baseDate.copyWith(
+                          hour: targetHour,
+                          minute: targetMinute,
+                        );
+                      });
+                    }
                   }
-                  if (_dragTargetTime != newDragTargetTime) {
-                    setState(() {
-                      _dragTargetTime = newDragTargetTime;
-                    });
-                  }
+                } else {
+                  setState(() {
+                    _dragTargetTime = null;
+                  });
                 }
               } catch (e) {
                 print('Error in drag calculation: $e');
               }
             },
             onWillAcceptWithDetails: (data) {
+              if (data.data != null) {
+                setState(() {
+                  _draggedEvent = data.data;
+                });
+              }
               return data.data != null;
             },
             onAcceptWithDetails: (details) {
-              _autoScrollTimer?.cancel();
-              _autoScrollTimer = null;
-              _autoScrollVelocity = 0.0;
               try {
+                // Simpan state untuk undo
                 _lastMovedEvent = details.data;
-                _originalStartTimeForUndo = details.data.startTime;
-                _originalEndTimeForUndo = details.data.endTime;
-                _originalEventDateForUndo =
-                    _originalSelectedDateOnDragStart ?? selectedDate;
+                _originalStartTime = details.data.startTime;
+                _originalEndTime = details.data.endTime;
 
-                if (_dragTargetTime != null) {
+                if (_dragDirection == 'left' || _dragDirection == 'right') {
+                  // Pindah ke tanggal berbeda berdasarkan offset
+                  _originalEventDate = _originalSelectedDate ?? selectedDate;
+                  _moveEventToDateWithOffset(
+                    details.data,
+                    _dragOffset,
+                    showUndo: true,
+                  );
+                } else if (_dragTargetTime != null) {
+                  // Drop di hari yang sama
+                  _originalEventDate = _originalSelectedDate ?? selectedDate;
                   _moveEventToTime(
                     details.data,
                     _dragTargetTime!,
@@ -594,39 +631,58 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
               } catch (e) {
                 print('Error in drop: $e');
               }
+
               setState(() {
                 _isDragging = false;
                 _dragTargetTime = null;
                 _draggedEvent = null;
-                _originalSelectedDateOnDragStart = null;
+                _dragDirection = '';
+                _originalSelectedDate = null;
+                _dragOffset = 0;
                 _lastUpdateTime = null;
               });
             },
             onLeave: (data) {
-              _autoScrollTimer?.cancel();
-              _autoScrollTimer = null;
-              _autoScrollVelocity = 0.0;
               setState(() {
+                _isDragging = false;
                 _dragTargetTime = null;
+                _draggedEvent = null;
+                _dragDirection = '';
+
+                // Kembalikan ke tanggal asli jika drag dibatalkan
+                if (_originalSelectedDate != null) {
+                  selectedDate = _originalSelectedDate!;
+                  _originalSelectedDate = null;
+                }
+                _dragOffset = 0;
+                _lastUpdateTime = null;
               });
             },
             builder: (context, candidateData, rejectedData) {
               bool isHighlighted = candidateData.isNotEmpty;
               Color? backgroundColor;
+
               if (isHighlighted) {
-                backgroundColor = Colors.orange.withOpacity(0.08);
+                if (_dragDirection == 'left') {
+                  backgroundColor = Colors.blue.withValues(alpha: 0.15);
+                } else if (_dragDirection == 'right') {
+                  backgroundColor = Colors.green.withValues(alpha: 0.15);
+                } else {
+                  backgroundColor = Colors.orange.withValues(alpha: 0.08);
+                }
               }
+
               return IgnorePointer(
                 ignoring: !isHighlighted,
                 child: Container(
                   color: backgroundColor ?? Colors.transparent,
                   child:
-                      isHighlighted
+                      isHighlighted && _dragDirection == ''
                           ? Container(
                             margin: const EdgeInsets.symmetric(horizontal: 4),
                             decoration: BoxDecoration(
                               border: Border.all(
-                                color: Colors.orange.withOpacity(0.6),
+                                color: Colors.orange.withValues(alpha: 0.6),
                                 width: 2,
                               ),
                               borderRadius: BorderRadius.circular(4),
@@ -650,11 +706,14 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       selectedDate.month,
       selectedDate.day,
     );
+
     bool isToday = currentSelectedDate.isAtSameMomentAs(today);
+
     if (!isToday) return const SizedBox.shrink();
 
     double topPosition =
         (now.hour * hourHeight) + ((now.minute / 60) * hourHeight);
+
     return Positioned(
       top: topPosition,
       left: 0,
@@ -692,82 +751,89 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     sortedEvents.sort((a, b) => a.startTime.compareTo(b.startTime));
 
     List<EventLayout> layouts = [];
-    List<CalendarEvent> processedEvents = [];
+    List<List<CalendarEvent>> eventGroups = [];
 
     for (CalendarEvent event in sortedEvents) {
-      if (processedEvents.contains(event)) continue;
+      bool addedToGroup = false;
 
-      List<CalendarEvent> overlappingGroup = [event];
-
-      for (CalendarEvent otherEvent in sortedEvents) {
-        if (event == otherEvent || processedEvents.contains(otherEvent))
-          continue;
-        if (overlappingGroup.contains(otherEvent)) continue;
-
-        bool overlapsWithCurrentGroup = false;
-        for (CalendarEvent groupEvent in overlappingGroup) {
-          if (_eventsOverlap(groupEvent, otherEvent)) {
-            overlapsWithCurrentGroup = true;
+      for (List<CalendarEvent> group in eventGroups) {
+        bool hasOverlap = false;
+        for (CalendarEvent groupEvent in group) {
+          if (_eventsOverlap(event, groupEvent)) {
+            hasOverlap = true;
             break;
           }
         }
-        if (overlapsWithCurrentGroup) {
-          overlappingGroup.add(otherEvent);
+        if (hasOverlap) {
+          group.add(event);
+          addedToGroup = true;
+          break;
         }
       }
 
-      for (var e in overlappingGroup) {
-        if (!processedEvents.contains(e)) processedEvents.add(e);
+      if (!addedToGroup) {
+        eventGroups.add([event]);
       }
+    }
 
-      overlappingGroup.sort((a, b) {
-        int comp = a.startTime.compareTo(b.startTime);
-        if (comp == 0) {
-          return a.endTime.compareTo(b.endTime);
-        }
-        return comp;
-      });
+    for (List<CalendarEvent> group in eventGroups) {
+      if (group.length == 1) {
+        layouts.add(
+          EventLayout(
+            event: group[0],
+            left: 0.0,
+            width: 1.0,
+            column: 0,
+            totalColumns: 1,
+          ),
+        );
+      } else {
+        List<List<CalendarEvent>> columns = [];
 
-      List<List<CalendarEvent>> columns = [];
+        for (CalendarEvent event in group) {
+          int targetColumn = -1;
 
-      for (CalendarEvent currentEventInGroup in overlappingGroup) {
-        int targetCol = -1;
-        for (int i = 0; i < columns.length; i++) {
-          bool canPlace = true;
-          for (CalendarEvent placedEvent in columns[i]) {
-            if (_eventsOverlap(currentEventInGroup, placedEvent)) {
-              canPlace = false;
+          for (int i = 0; i < columns.length; i++) {
+            bool canPlace = true;
+            for (CalendarEvent existingEvent in columns[i]) {
+              if (_eventsOverlap(event, existingEvent)) {
+                canPlace = false;
+                break;
+              }
+            }
+            if (canPlace) {
+              targetColumn = i;
               break;
             }
           }
-          if (canPlace) {
-            targetCol = i;
-            break;
+
+          if (targetColumn == -1) {
+            columns.add([]);
+            targetColumn = columns.length - 1;
           }
+
+          columns[targetColumn].add(event);
         }
 
-        if (targetCol == -1) {
-          columns.add([]);
-          targetCol = columns.length - 1;
-        }
-        columns[targetCol].add(currentEventInGroup);
-      }
+        int totalColumns = columns.length;
+        double columnWidth = 1.0 / totalColumns;
 
-      int totalColumnsInGroup = columns.isNotEmpty ? columns.length : 1;
-      for (int colIdx = 0; colIdx < columns.length; colIdx++) {
-        for (CalendarEvent ev in columns[colIdx]) {
-          layouts.add(
-            EventLayout(
-              event: ev,
-              left: colIdx.toDouble() / totalColumnsInGroup.toDouble(),
-              width: 1.0 / totalColumnsInGroup.toDouble(),
-              column: colIdx,
-              totalColumns: totalColumnsInGroup,
-            ),
-          );
+        for (int columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+          for (CalendarEvent event in columns[columnIndex]) {
+            layouts.add(
+              EventLayout(
+                event: event,
+                left: columnIndex * columnWidth,
+                width: columnWidth,
+                column: columnIndex,
+                totalColumns: totalColumns,
+              ),
+            );
+          }
         }
       }
     }
+
     return layouts;
   }
 
@@ -780,20 +846,22 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     CalendarEvent event = layout.event;
     double top = _getEventTopPosition(event);
     double height = _getEventHeight(event);
-    double leftPadding = 4;
-    double rightPadding = 4;
+    double leftPadding = 8;
+    double rightPadding = 8;
 
     double screenWidth = MediaQuery.of(context).size.width;
-    double availableWidthForEvents =
+    double availableWidth =
         screenWidth - timeColumnWidth - leftPadding - rightPadding;
 
-    double eventWidth =
-        (availableWidthForEvents * layout.width).clamp(
-          50.0,
-          availableWidthForEvents,
-        ) -
-        (layout.totalColumns > 1 ? 2 : 0);
-    double eventLeft = leftPadding + (availableWidthForEvents * layout.left);
+    double eventWidth = (availableWidth * layout.width).clamp(
+      80.0,
+      availableWidth,
+    );
+    double eventLeft = leftPadding + (availableWidth * layout.left);
+
+    if (eventLeft + eventWidth > screenWidth - rightPadding) {
+      eventLeft = screenWidth - rightPadding - eventWidth;
+    }
 
     return Positioned(
       top: top,
@@ -806,22 +874,25 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
           setState(() {
             _isDragging = true;
             _draggedEvent = event;
-            _originalSelectedDateOnDragStart = selectedDate;
+            _dragDirection = '';
+            _originalSelectedDate = null;
+            _dragOffset = 0;
             _lastUpdateTime = null;
-            _autoScrollTimer?.cancel();
-            _autoScrollTimer = null;
-            _autoScrollVelocity = 0.0;
           });
         },
         onDragEnd: (details) {
-          _autoScrollTimer?.cancel();
-          _autoScrollTimer = null;
-          _autoScrollVelocity = 0.0;
           setState(() {
             _isDragging = false;
             _dragTargetTime = null;
             _draggedEvent = null;
-            _originalSelectedDateOnDragStart = null;
+            _dragDirection = '';
+
+            // Kembalikan ke tanggal asli jika drag dibatalkan tanpa drop
+            if (_originalSelectedDate != null) {
+              selectedDate = _originalSelectedDate!;
+              _originalSelectedDate = null;
+            }
+            _dragOffset = 0;
             _lastUpdateTime = null;
           });
         },
@@ -832,7 +903,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
             width: eventWidth,
             height: height,
             decoration: BoxDecoration(
-              color: event.color.withOpacity(0.9),
+              color: event.color.withValues(alpha: 0.9),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.white, width: 2),
             ),
@@ -870,7 +941,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
         ),
         childWhenDragging: Container(
           decoration: BoxDecoration(
-            color: Colors.grey.withOpacity(0.4),
+            color: Colors.grey.withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: Colors.grey.shade400, width: 2),
           ),
@@ -890,7 +961,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
               borderRadius: BorderRadius.circular(8),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.15),
+                  color: Colors.black.withValues(alpha: 0.15),
                   blurRadius: 4,
                   offset: const Offset(0, 2),
                 ),
@@ -933,7 +1004,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   }
 
   Widget _buildDragTimeIndicator() {
-    if (_dragTargetTime == null || !_isDragging) {
+    if (_dragTargetTime == null) {
       return const SizedBox.shrink();
     }
 
@@ -975,7 +1046,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
               border: Border.all(color: Colors.white, width: 1),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.5),
+                  color: Colors.black.withValues(alpha: 0.5),
                   blurRadius: 8,
                   offset: const Offset(0, 3),
                 ),
@@ -984,7 +1055,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.schedule, color: Colors.white, size: 14),
+                Icon(Icons.schedule, color: Colors.white, size: 14),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
@@ -1005,6 +1076,125 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     );
   }
 
+  Widget _buildDateChangeIndicators() {
+    if (!_isDragging || _draggedEvent == null) return const SizedBox.shrink();
+
+    return Stack(
+      children: [
+        // Indikator kiri - tanggal sebelumnya
+        if (_dragDirection == 'left')
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: Container(
+              width: 80,
+              color: Colors.blue.withValues(alpha: 0.4),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.arrow_back, color: Colors.white, size: 32),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            _formatDateShort(selectedDate),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          if (_dragOffset.abs() > 1)
+                            Text(
+                              '${_dragOffset} hari',
+                              style: const TextStyle(
+                                color: Colors.yellowAccent,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        // Indikator kanan - tanggal selanjutnya
+        if (_dragDirection == 'right')
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: Container(
+              width: 80,
+              color: Colors.green.withValues(alpha: 0.4),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.arrow_forward, color: Colors.white, size: 32),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            _formatDateShort(selectedDate),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          if (_dragOffset > 1)
+                            Text(
+                              '+${_dragOffset} hari',
+                              style: const TextStyle(
+                                color: Colors.yellowAccent,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _formatDateShort(DateTime dateTime) {
+    List<String> days = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+    String dayName = days[dateTime.weekday % 7];
+    return '$dayName\n${dateTime.day}/${dateTime.month}';
+  }
+
   double _getEventTopPosition(CalendarEvent event) {
     int hour = event.startTime.hour;
     int minute = event.startTime.minute;
@@ -1017,17 +1207,26 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   }
 
   void _createEventAtPosition(double yPosition) {
+    // Hitung jam berdasarkan posisi Y yang tepat
     double hours = yPosition / hourHeight;
     int targetHour = hours.floor();
     int targetMinute = ((hours - targetHour) * 60).round();
+
+    // Snap ke interval 5 menit untuk presisi yang baik
     targetMinute = (targetMinute ~/ minuteInterval) * minuteInterval;
+
     if (targetMinute >= 60) {
       targetHour += 1;
       targetMinute = 0;
     }
+
+    // Pastikan dalam range valid
     if (targetHour < 0) targetHour = 0;
     if (targetHour >= 24) targetHour = 23;
+    if (targetMinute < 0) targetMinute = 0;
+    if (targetMinute >= 60) targetMinute = 55;
 
+    // Buat event tepat di posisi yang diklik
     DateTime baseDate = DateTime(
       selectedDate.year,
       selectedDate.month,
@@ -1037,7 +1236,9 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       hour: targetHour,
       minute: targetMinute,
     );
-    DateTime endTime = startTime.add(const Duration(hours: 1));
+    DateTime endTime = startTime.add(
+      const Duration(hours: 1),
+    ); // Default durasi 1 jam
 
     String eventId = DateTime.now().millisecondsSinceEpoch.toString();
     List<Color> eventColors = [
@@ -1065,7 +1266,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       events.add(newEvent);
       eventsPerDate[_getDateKey(selectedDate)] = events;
     });
-    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -1089,6 +1290,170 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     );
   }
 
+  void _moveEventToDateWithOffset(
+    CalendarEvent event,
+    int dayOffset, {
+    bool showUndo = false,
+  }) {
+    DateTime originalDate = _originalSelectedDate ?? selectedDate;
+    DateTime newDate = originalDate.add(Duration(days: dayOffset));
+    DateTime newBaseDate = DateTime(newDate.year, newDate.month, newDate.day);
+
+    // Pertahankan jam dan menit yang sama
+    DateTime newStartTime = newBaseDate.copyWith(
+      hour: event.startTime.hour,
+      minute: event.startTime.minute,
+    );
+    DateTime newEndTime = newBaseDate.copyWith(
+      hour: event.endTime.hour,
+      minute: event.endTime.minute,
+    );
+
+    // Handle jika event melewati midnight
+    if (event.endTime.day != event.startTime.day) {
+      newEndTime = newEndTime.add(const Duration(days: 1));
+    }
+
+    CalendarEvent updatedEvent = event.copyWith(
+      startTime: newStartTime,
+      endTime: newEndTime,
+    );
+
+    setState(() {
+      // Hapus dari tanggal lama
+      String originalDateKey = _getDateKey(originalDate);
+      List<CalendarEvent> oldEvents = List.from(
+        eventsPerDate[originalDateKey] ?? [],
+      );
+      oldEvents.removeWhere((e) => e.id == event.id);
+      eventsPerDate[originalDateKey] = oldEvents;
+
+      // Tambah ke tanggal baru
+      String newDateKey = _getDateKey(newDate);
+      List<CalendarEvent> newEvents = List.from(
+        eventsPerDate[newDateKey] ?? [],
+      );
+      newEvents.add(updatedEvent);
+      eventsPerDate[newDateKey] = newEvents;
+
+      // Pastikan kita di tanggal yang benar
+      selectedDate = newDate;
+    });
+
+    String dateString = _formatDate(newDate);
+    String offsetText =
+        dayOffset == 0
+            ? ''
+            : dayOffset > 0
+            ? ' (+${dayOffset} hari)'
+            : ' (${dayOffset} hari)';
+
+    if (showUndo) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${event.title} dipindah ke $dateString$offsetText'),
+          duration: const Duration(seconds: 4),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'BATALKAN',
+            textColor: Colors.white,
+            onPressed: () => _undoMoveEvent(),
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${event.title} dipindah ke $dateString$offsetText'),
+          duration: const Duration(seconds: 2),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _moveEventToDate(
+    CalendarEvent event,
+    int dayOffset, {
+    bool showUndo = false,
+  }) {
+    DateTime originalDate =
+        _originalSelectedDate ??
+        selectedDate.subtract(Duration(days: dayOffset));
+    DateTime newDate = originalDate.add(Duration(days: dayOffset));
+    DateTime newBaseDate = DateTime(newDate.year, newDate.month, newDate.day);
+
+    // Pertahankan jam dan menit yang sama
+    DateTime newStartTime = newBaseDate.copyWith(
+      hour: event.startTime.hour,
+      minute: event.startTime.minute,
+    );
+    DateTime newEndTime = newBaseDate.copyWith(
+      hour: event.endTime.hour,
+      minute: event.endTime.minute,
+    );
+
+    // Handle jika event melewati midnight
+    if (event.endTime.day != event.startTime.day) {
+      newEndTime = newEndTime.add(const Duration(days: 1));
+    }
+
+    CalendarEvent updatedEvent = event.copyWith(
+      startTime: newStartTime,
+      endTime: newEndTime,
+    );
+
+    setState(() {
+      // Hapus dari tanggal lama
+      String originalDateKey = _getDateKey(originalDate);
+      List<CalendarEvent> oldEvents = List.from(
+        eventsPerDate[originalDateKey] ?? [],
+      );
+      oldEvents.removeWhere((e) => e.id == event.id);
+      eventsPerDate[originalDateKey] = oldEvents;
+
+      // Tambah ke tanggal baru
+      String newDateKey = _getDateKey(newDate);
+      List<CalendarEvent> newEvents = List.from(
+        eventsPerDate[newDateKey] ?? [],
+      );
+      newEvents.add(updatedEvent);
+      eventsPerDate[newDateKey] = newEvents;
+
+      // Pastikan kita di tanggal yang benar
+      selectedDate = newDate;
+    });
+
+    String dateString = _formatDate(newDate);
+
+    if (showUndo) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${event.title} dipindah ke $dateString'),
+          duration: const Duration(seconds: 4),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'BATALKAN',
+            textColor: Colors.white,
+            onPressed: () => _undoMoveEvent(),
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${event.title} dipindah ke $dateString'),
+          duration: const Duration(seconds: 2),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   void _moveEventToTime(
     CalendarEvent event,
     DateTime targetTime, {
@@ -1097,32 +1462,18 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     Duration eventDuration = event.endTime.difference(event.startTime);
     DateTime newEndTime = targetTime.add(eventDuration);
 
-    if (showUndo) {
-      _lastMovedEvent = event.copyWith();
-      _originalStartTimeForUndo = event.startTime;
-      _originalEndTimeForUndo = event.endTime;
-      _originalEventDateForUndo = selectedDate;
-    }
-
     setState(() {
-      String currentDayKey = _getDateKey(selectedDate);
-      List<CalendarEvent> dayEvents = List.from(
-        eventsPerDate[currentDayKey] ?? [],
-      );
-      int index = dayEvents.indexWhere((e) => e.id == event.id);
-
+      List<CalendarEvent> events = currentEvents;
+      int index = events.indexWhere((e) => e.id == event.id);
       if (index != -1) {
-        dayEvents[index] = event.copyWith(
+        events[index] = event.copyWith(
           startTime: targetTime,
           endTime: newEndTime,
         );
-        eventsPerDate[currentDayKey] = dayEvents;
-      } else {
-        print("Error: Event to move not found in current day's list.");
-        return;
+        eventsPerDate[_getDateKey(selectedDate)] = events;
       }
     });
-    if (!mounted) return;
+
     if (showUndo) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1155,67 +1506,54 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
 
   void _undoMoveEvent() {
     if (_lastMovedEvent == null ||
-        _originalEventDateForUndo == null ||
-        _originalStartTimeForUndo == null ||
-        _originalEndTimeForUndo == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Tidak ada aksi untuk dibatalkan.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+        _originalEventDate == null ||
+        _originalStartTime == null ||
+        _originalEndTime == null) {
       return;
     }
 
-    CalendarEvent eventToRestore = _lastMovedEvent!;
-    DateTime originalDate = _originalEventDateForUndo!;
-    DateTime originalStartTime = _originalStartTimeForUndo!;
-    DateTime originalEndTime = _originalEndTimeForUndo!;
+    CalendarEvent originalEvent = _lastMovedEvent!.copyWith(
+      startTime: _originalStartTime!,
+      endTime: _originalEndTime!,
+    );
 
     setState(() {
-      eventsPerDate.forEach((dateKey, eventList) {
-        eventList.removeWhere((e) => e.id == eventToRestore.id);
-      });
+      // Hapus dari tanggal saat ini
+      String currentDateKey = _getDateKey(selectedDate);
+      List<CalendarEvent> currentEvents = List.from(
+        eventsPerDate[currentDateKey] ?? [],
+      );
+      currentEvents.removeWhere((e) => e.id == _lastMovedEvent!.id);
+      eventsPerDate[currentDateKey] = currentEvents;
 
-      String originalDateKey = _getDateKey(originalDate);
-      List<CalendarEvent> originalDateEvents = List.from(
+      // Kembalikan ke tanggal asli
+      String originalDateKey = _getDateKey(_originalEventDate!);
+      List<CalendarEvent> originalEvents = List.from(
         eventsPerDate[originalDateKey] ?? [],
       );
+      originalEvents.add(originalEvent);
+      eventsPerDate[originalDateKey] = originalEvents;
 
-      originalDateEvents.add(
-        eventToRestore.copyWith(
-          startTime: originalStartTime,
-          endTime: originalEndTime,
-        ),
-      );
-      eventsPerDate[originalDateKey] = originalDateEvents;
-
-      if (!_isSameDay(selectedDate, originalDate)) {
-        selectedDate = originalDate;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToCurrentTime();
-        });
-      }
+      // Pindah ke tanggal asli
+      selectedDate = _originalEventDate!;
     });
-    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${eventToRestore.title} dikembalikan ke posisi semula.'),
+        content: Text(
+          '${_lastMovedEvent!.title} dikembalikan ke posisi semula',
+        ),
         duration: const Duration(seconds: 2),
         backgroundColor: Colors.orange,
         behavior: SnackBarBehavior.floating,
       ),
     );
 
+    // Reset undo data
     _lastMovedEvent = null;
-    _originalEventDateForUndo = null;
-    _originalStartTimeForUndo = null;
-    _originalEndTimeForUndo = null;
-  }
-
-  bool _isSameDay(DateTime d1, DateTime d2) {
-    return d1.year == d2.year && d1.month == d2.month && d1.day == d2.day;
+    _originalEventDate = null;
+    _originalStartTime = null;
+    _originalEndTime = null;
   }
 
   void _addNewEvent() {
@@ -1225,10 +1563,13 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       selectedDate.day,
     );
     DateTime now = DateTime.now();
+
+    // Jika selectedDate adalah hari ini, gunakan waktu saat ini
+    // Jika tidak, gunakan jam 9 pagi
     int defaultHour = 9;
     int defaultMinute = 0;
 
-    if (_isSameDay(baseDate, DateTime(now.year, now.month, now.day))) {
+    if (baseDate.isAtSameMomentAs(DateTime(now.year, now.month, now.day))) {
       defaultHour = now.hour;
       defaultMinute = (now.minute ~/ minuteInterval) * minuteInterval;
     }
@@ -1248,8 +1589,74 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
     });
   }
 
+  void _createEventAtHour(int hour, [int minute = 0]) {
+    if (hour < 0 || hour >= 24) return;
+
+    DateTime baseDate = DateTime(
+      selectedDate.year,
+      selectedDate.month,
+      selectedDate.day,
+    );
+    DateTime startTime = baseDate.copyWith(hour: hour, minute: minute);
+    DateTime endTime = baseDate.copyWith(hour: hour + 1, minute: minute);
+
+    if (hour == 23) {
+      endTime = baseDate
+          .add(const Duration(days: 1))
+          .copyWith(hour: 0, minute: minute);
+    }
+
+    String eventId = DateTime.now().millisecondsSinceEpoch.toString();
+    List<Color> eventColors = [
+      Colors.blue,
+      Colors.green,
+      Colors.orange,
+      Colors.purple,
+      Colors.red,
+      Colors.teal,
+      Colors.indigo,
+      Colors.pink,
+    ];
+    Color randomColor = eventColors[eventId.hashCode % eventColors.length];
+
+    CalendarEvent newEvent = CalendarEvent(
+      id: eventId,
+      title: 'Event ${_formatTime(startTime)}',
+      startTime: startTime,
+      endTime: endTime,
+      color: randomColor,
+    );
+
+    setState(() {
+      List<CalendarEvent> events = List.from(currentEvents);
+      events.add(newEvent);
+      eventsPerDate[_getDateKey(selectedDate)] = events;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Event baru dibuat: ${_formatTime(startTime)} - ${_formatTime(endTime)}',
+        ),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: 'UNDO',
+          textColor: Colors.white,
+          onPressed: () {
+            setState(() {
+              List<CalendarEvent> events = List.from(currentEvents);
+              events.removeWhere((e) => e.id == eventId);
+              eventsPerDate[_getDateKey(selectedDate)] = events;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
   void _showEventDetails(CalendarEvent event) {
-    if (!mounted) return;
     showDialog(
       context: context,
       builder:
@@ -1268,7 +1675,8 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
                 ),
                 const Text('• Long press untuk drag & drop event'),
                 const Text('• Drop precision: 5 menit'),
-                const Text('• Drag ke tepi atas/bawah untuk scroll otomatis'),
+                const Text('• Drag ke tepi = preview tanggal & pindah 1+ hari'),
+                const Text('• Semakin jauh drag, semakin banyak hari'),
                 const Text('• Tombol BATALKAN untuk undo'),
                 const Text('• Klik di area kalender (kanan) untuk buat event'),
                 const Text('• Swipe horizontal untuk ganti tanggal'),
@@ -1296,7 +1704,6 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   }
 
   void _showHelpDialog() {
-    if (!mounted) return;
     showDialog(
       context: context,
       builder:
@@ -1333,7 +1740,11 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Text('• Long press event lalu drag ke jam yang diinginkan'),
-                Text('• Drag ke tepi atas/bawah view untuk scroll otomatis'),
+                Text('• Drag ke kiri time column = mundur 1+ hari'),
+                Text('• Drag ke kanan melewati screen = maju 1+ hari'),
+                Text(
+                  '• Semakin jauh drag, semakin banyak hari (30px = 1 hari)',
+                ),
                 Text('• Precision 5 menit (snap ke 10:00, 10:05, 10:10, dst)'),
                 Text('• Tombol "BATALKAN" untuk undo pindah event'),
                 Text('• Events overlap akan otomatis split'),
@@ -1378,16 +1789,10 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
       'Nov',
       'Des',
     ];
-    String dayName =
-        days[dateTime.weekday %
-            7]; // Senin adalah 1, Minggu adalah 7. %7 agar index array pas.
-    if (dateTime.weekday == 7)
-      dayName =
-          days[0]; // Handle Minggu sebagai index 0 jika perlu. Atau sesuaikan array `days`.
-    else
-      dayName = days[dateTime.weekday % 7];
 
+    String dayName = days[dateTime.weekday % 7];
     String monthName = months[dateTime.month];
+
     return '$dayName, ${dateTime.day} $monthName ${dateTime.year}';
   }
 
@@ -1396,6 +1801,7 @@ class _DayViewCalendarState extends State<DayViewCalendar> {
   }
 }
 
+// Widget utama untuk demo
 class CalendarApp extends StatelessWidget {
   const CalendarApp({super.key});
 
@@ -1405,7 +1811,6 @@ class CalendarApp extends StatelessWidget {
       title: 'Day View Calendar',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: DayViewCalendar(initialDate: DateTime.now()),
-      debugShowCheckedModeBanner: false,
     );
   }
 }
